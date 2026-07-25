@@ -60,7 +60,11 @@ exports.handler = async (event) => {
     );
 
     if (!playerRes.ok) {
-      return respond(502, { error: 'FETCH_FAILED', message: 'YouTube did not respond as expected. Please try again.' });
+      const bodyText = await playerRes.text();
+      return respond(502, {
+        error: 'FETCH_FAILED',
+        message: `YouTube did not respond as expected (status ${playerRes.status}). ${bodyText.slice(0, 300)}`
+      });
     }
 
     const playerResponse = await playerRes.json();
