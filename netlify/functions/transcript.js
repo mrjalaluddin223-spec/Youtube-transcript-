@@ -1,11 +1,13 @@
 // netlify/functions/transcript.js
 //
-// Runs server-side on Netlify (Node 18+, which has a built-in `fetch`).
-// A browser can't fetch youtube.com directly (YouTube blocks cross-origin
-// requests), so this function does the fetching on the server and hands
-// clean JSON back to the page.
+// Fetches YouTube captions using YouTube's internal "innertube" API (the
+// same one the official Android app uses), instead of scraping the public
+// watch page. Scraping the watch page from a server/datacenter IP often
+// triggers YouTube's "confirm you're not a bot" wall; the app API is far
+// less likely to be blocked and returns clean JSON directly.
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+const ANDROID_UA = 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip';
 
 function respond(statusCode, body) {
   return {
@@ -17,49 +19,6 @@ function respond(statusCode, body) {
     },
     body: JSON.stringify(body)
   };
-}
-
-function extractJsonAfter(html, marker) {
-  const markerIdx = html.indexOf(marker);
-  if (markerIdx === -1) return null;
-  const start = html.indexOf('{', markerIdx);
-  if (start === -1) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = start; i < html.length; i++) {
-    const ch = html[i];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === '\\') {
-        escaped = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = true;
-    } else if (ch === '{') {
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        const jsonStr = html.slice(start, i + 1);
-        try {
-          return JSON.parse(jsonStr);
-        } catch (e) {
-          return null;
-        }
-      }
-    }
-  }
-  return null;
 }
 
 exports.handler = async (event) => {
@@ -74,28 +33,37 @@ exports.handler = async (event) => {
   }
 
   try {
-    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
-      headers: {
-        'User-Agent': UA,
-        'Accept-Language': 'en-US,en;q=0.9'
+    const playerRes = await fetch(
+      `https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_KEY}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': ANDROID_UA,
+          'X-YouTube-Client-Name': '3',
+          'X-YouTube-Client-Version': '19.09.37'
+        },
+        body: JSON.stringify({
+          videoId,
+          context: {
+            client: {
+              clientName: 'ANDROID',
+              clientVersion: '19.09.37',
+              androidSdkVersion: 30,
+              hl: 'en',
+              gl: 'US',
+              userAgent: ANDROID_UA
+            }
+          }
+        })
       }
-    });
+    );
 
-    if (!pageRes.ok) {
-      return respond(502, { error: 'FETCH_FAILED', message: 'YouTube did not return that page. The video may not exist.' });
+    if (!playerRes.ok) {
+      return respond(502, { error: 'FETCH_FAILED', message: 'YouTube did not respond as expected. Please try again.' });
     }
 
-    const html = await pageRes.text();
-
-    if (/consent\.youtube\.com/.test(html) || /Before you continue to YouTube/.test(html)) {
-      return respond(502, { error: 'CONSENT_WALL', message: 'YouTube returned a consent page instead of the video. Please try again in a moment.' });
-    }
-
-    const playerResponse = extractJsonAfter(html, 'ytInitialPlayerResponse');
-
-    if (!playerResponse) {
-      return respond(502, { error: 'PARSE_FAILED', message: 'Could not read this video\'s data. It may be private, age-restricted, or region-locked.' });
-    }
+    const playerResponse = await playerRes.json();
 
     const playability = playerResponse.playabilityStatus && playerResponse.playabilityStatus.status;
     if (playability && playability !== 'OK') {
@@ -126,7 +94,7 @@ exports.handler = async (event) => {
     }
 
     const transcriptRes = await fetch(`${chosen.baseUrl}&fmt=json3`, {
-      headers: { 'User-Agent': UA }
+      headers: { 'User-Agent': ANDROID_UA }
     });
 
     if (!transcriptRes.ok) {
