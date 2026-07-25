@@ -1,4 +1,4 @@
-// netlify/functions/transcript.js
+//netlify/functions/transcript.js
 //
 // Fetches YouTube captions using YouTube's internal "innertube" API (the
 // same one the official Android app uses), instead of scraping the public
