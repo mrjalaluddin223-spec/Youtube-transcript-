@@ -1,0 +1,9 @@
+{
+  "name": "yt-transcript-extractor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Paste a YouTube link, get the full transcript in the original language or any available language.",
+  "engines": {
+    "node": ">=18"
+  }
+}
