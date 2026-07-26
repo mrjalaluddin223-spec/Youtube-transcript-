@@ -1,13 +1,48 @@
-//netlify/functions/transcript.js
+
+  // netlify/functions/transcript.js
 //
 // Fetches YouTube captions using YouTube's internal "innertube" API (the
-// same one the official Android app uses), instead of scraping the public
-// watch page. Scraping the watch page from a server/datacenter IP often
-// triggers YouTube's "confirm you're not a bot" wall; the app API is far
-// less likely to be blocked and returns clean JSON directly.
+// same one YouTube's own apps use), instead of scraping the public watch
+// page. Tries a few different client identities in turn, since YouTube
+// periodically blocks one or another; the first one that works is used.
 
 const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-const ANDROID_UA = 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip';
+
+const CLIENTS = [
+  {
+    clientNameHeader: '5',
+    context: {
+      clientName: 'IOS',
+      clientVersion: '19.45.4',
+      deviceModel: 'iPhone16,2',
+      userAgent: 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 17_5 like Mac OS X)',
+      hl: 'en',
+      gl: 'US'
+    }
+  },
+  {
+    clientNameHeader: '85',
+    context: {
+      clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+      clientVersion: '2.0',
+      hl: 'en',
+      gl: 'US'
+    },
+    thirdParty: { embedUrl: 'https://www.youtube.com/' },
+    userAgent: 'Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko)'
+  },
+  {
+    clientNameHeader: '3',
+    context: {
+      clientName: 'ANDROID',
+      clientVersion: '19.45.38',
+      androidSdkVersion: 30,
+      userAgent: 'com.google.android.youtube/19.45.38 (Linux; U; Android 11) gzip',
+      hl: 'en',
+      gl: 'US'
+    }
+  }
+];
 
 function respond(statusCode, body) {
   return {
@@ -18,6 +53,58 @@ function respond(statusCode, body) {
       'Cache-Control': 'no-store'
     },
     body: JSON.stringify(body)
+  };
+}
+
+async function tryClient(clientConfig, videoId) {
+  const ua = clientConfig.context.userAgent || clientConfig.userAgent ||
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+  const payload = {
+    videoId,
+    context: { client: clientConfig.context }
+  };
+  if (clientConfig.thirdParty) {
+    payload.context.thirdParty = clientConfig.thirdParty;
+  }
+
+  const res = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_KEY}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': ua,
+      'X-YouTube-Client-Name': clientConfig.clientNameHeader,
+      'X-YouTube-Client-Version': clientConfig.context.clientVersion
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    return { ok: false, status: res.status, detail: text.slice(0, 200), clientName: clientConfig.context.clientName };
+  }
+
+  if (!res.ok) {
+    return { ok: false, status: res.status, detail: JSON.stringify(json).slice(0, 200), clientName: clientConfig.context.clientName };
+  }
+
+  const playability = json.playabilityStatus && json.playabilityStatus.status;
+  const tracklist = json.captions && json.captions.playerCaptionsTracklistRenderer;
+  const hasCaptions = tracklist && tracklist.captionTracks && tracklist.captionTracks.length;
+
+  if (playability === 'OK' && hasCaptions) {
+    return { ok: true, playerResponse: json, ua };
+  }
+
+  return {
+    ok: false,
+    status: res.status,
+    detail: `playability=${playability || 'unknown'} hasCaptions=${!!hasCaptions}`,
+    clientName: clientConfig.context.clientName,
+    playerResponse: json
   };
 }
 
@@ -32,57 +119,40 @@ exports.handler = async (event) => {
     return respond(400, { error: 'BAD_REQUEST', message: 'Missing or invalid videoId.' });
   }
 
-  try {
-    const playerRes = await fetch(
-      `https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_KEY}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': ANDROID_UA,
-          'X-YouTube-Client-Name': '3',
-          'X-YouTube-Client-Version': '19.09.37'
-        },
-        body: JSON.stringify({
-          videoId,
-          context: {
-            client: {
-              clientName: 'ANDROID',
-              clientVersion: '19.09.37',
-              androidSdkVersion: 30,
-              hl: 'en',
-              gl: 'US',
-              userAgent: ANDROID_UA
-            }
-          }
-        })
-      }
-    );
+  const attempts = [];
+  let success = null;
 
-    if (!playerRes.ok) {
-      const bodyText = await playerRes.text();
+  try {
+    for (const clientConfig of CLIENTS) {
+      const result = await tryClient(clientConfig, videoId);
+      attempts.push({ client: clientConfig.context.clientName, status: result.status, detail: result.detail });
+      if (result.ok) {
+        success = result;
+        break;
+      }
+      if (result.playerResponse && result.playerResponse.playabilityStatus &&
+          result.playerResponse.playabilityStatus.status !== 'OK' && !success) {
+        success = { unplayable: result.playerResponse.playabilityStatus };
+      }
+    }
+
+    if (!success || !success.playerResponse) {
+      if (success && success.unplayable) {
+        return respond(422, {
+          error: 'UNPLAYABLE',
+          message: success.unplayable.reason || 'This video is not available.'
+        });
+      }
       return respond(502, {
-        error: 'FETCH_FAILED',
-        message: `YouTube did not respond as expected (status ${playerRes.status}). ${bodyText.slice(0, 300)}`
+        error: 'ALL_CLIENTS_FAILED',
+        message: 'Could not read this video from any client. Details: ' + JSON.stringify(attempts).slice(0, 500)
       });
     }
 
-    const playerResponse = await playerRes.json();
-
-    const playability = playerResponse.playabilityStatus && playerResponse.playabilityStatus.status;
-    if (playability && playability !== 'OK') {
-      const reason = (playerResponse.playabilityStatus && playerResponse.playabilityStatus.reason) || 'This video is not available.';
-      return respond(422, { error: 'UNPLAYABLE', message: reason });
-    }
-
+    const { playerResponse, ua } = success;
     const videoDetails = playerResponse.videoDetails || {};
-    const tracklist = playerResponse.captions &&
-      playerResponse.captions.playerCaptionsTracklistRenderer;
-    const rawTracks = (tracklist && tracklist.captionTracks) || [];
-
-    if (!rawTracks.length) {
-      return respond(422, { error: 'NO_CAPTIONS', message: 'This video has no captions available, so there is no transcript to pull.' });
-    }
+    const tracklist = playerResponse.captions.playerCaptionsTracklistRenderer;
+    const rawTracks = tracklist.captionTracks || [];
 
     const tracks = rawTracks.map(t => ({
       code: t.languageCode,
@@ -98,7 +168,7 @@ exports.handler = async (event) => {
     }
 
     const transcriptRes = await fetch(`${chosen.baseUrl}&fmt=json3`, {
-      headers: { 'User-Agent': ANDROID_UA }
+      headers: { 'User-Agent': ua }
     });
 
     if (!transcriptRes.ok) {
@@ -130,6 +200,6 @@ exports.handler = async (event) => {
     });
 
   } catch (err) {
-    return respond(500, { error: 'SERVER_ERROR', message: 'Unexpected error while reading the transcript. Please try again.' });
+    return respond(500, { error: 'SERVER_ERROR', message: 'Unexpected error: ' + (err && err.message ? err.message : String(err)) });
   }
 };
