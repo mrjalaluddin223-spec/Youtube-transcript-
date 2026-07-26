@@ -9,36 +9,36 @@ const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
 
 const CLIENTS = [
   {
-    clientNameHeader: '5',
+    // "sdkless" Android client — omitting androidSdkVersion avoids
+    // triggering YouTube's PO Token requirement, as of early 2026.
+    clientNameHeader: '3',
     context: {
-      clientName: 'IOS',
-      clientVersion: '19.45.4',
-      deviceModel: 'iPhone16,2',
-      userAgent: 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 17_5 like Mac OS X)',
+      clientName: 'ANDROID',
+      clientVersion: '20.10.38',
+      userAgent: 'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
       hl: 'en',
       gl: 'US'
     }
   },
   {
-    clientNameHeader: '85',
+    clientNameHeader: '5',
     context: {
-      clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
-      clientVersion: '2.0',
+      clientName: 'IOS',
+      clientVersion: '20.03.02',
+      deviceModel: 'iPhone16,2',
+      userAgent: 'com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X)',
       hl: 'en',
       gl: 'US'
-    },
-    thirdParty: { embedUrl: 'https://www.youtube.com/' },
-    userAgent: 'Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko)'
+    }
   },
   {
-    clientNameHeader: '3',
+    clientNameHeader: '2',
     context: {
-      clientName: 'ANDROID',
-      clientVersion: '19.45.38',
-      androidSdkVersion: 30,
-      userAgent: 'com.google.android.youtube/19.45.38 (Linux; U; Android 11) gzip',
+      clientName: 'MWEB',
+      clientVersion: '2.20260201.00.00',
       hl: 'en',
-      gl: 'US'
+      gl: 'US',
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
     }
   }
 ];
